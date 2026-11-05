@@ -1,0 +1,40 @@
+{
+  "name": "cyshot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Full-page screenshots and freehand long-image stitching for phones",
+  "scripts": {
+    "setup": "python3 scripts/vendor-browser-libs.py && node scripts/vendor-fonts.mjs && playwright install chromium",
+    "dev": "node scripts/dev.mjs",
+    "dev:client": "vite",
+    "dev:server": "node --watch server/index.mjs",
+    "build": "tsc --noEmit && vite build",
+    "start": "NODE_ENV=production node server/index.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:api": "node scripts/test-api.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "^153.0.0",
+    "express": "^5.3.0",
+    "jspdf": "^4.2.1",
+    "playwright-core": "^1.64.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "playwright": "^1.64.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  }
+}
