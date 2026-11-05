@@ -5,10 +5,14 @@ import { ExportSheet } from './components/ExportSheet';
 import { Spinner } from './components/ui';
 import { disposeFrames, loadFrames, stitchLoadedFrames, type LoadedFrame } from './lib/frames';
 import { buildLayout, emptyOps, type EditOps } from './lib/document';
-import { capturePage, type CaptureRequest } from './lib/capture';
+import { capturePage, MAX_CAPTURE_HEIGHT, type CaptureRequest } from './lib/capture';
+import { detectPlatform } from './lib/platform';
 import type { StitchResult } from './lib/stitcher';
 
 type Screen = 'home' | 'busy' | 'editor';
+
+/** The phone in the user's hand decides how a shared link is rendered. */
+const DEFAULT_PRESET = detectPlatform().preset;
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 32));
 
@@ -84,9 +88,11 @@ export default function App() {
       setBusyLabel('Capturing the page');
       setProgress(0.15);
       try {
-        const result = await capturePage({ ...request, maxHeight: 15000 });
+        const result = await capturePage(request);
         if (result.truncated) {
-          setNotice('The page was taller than 15,000px, so the capture stopped at the limit.');
+          setNotice(
+            `The page was taller than the ${MAX_CAPTURE_HEIGHT.toLocaleString()}px capture limit, so the very bottom is missing. Stitch two captures for pages that long.`,
+          );
         } else if (result.downscaled) {
           setNotice('This capture came back at CSS resolution to fit the response size limit.');
         }
@@ -111,7 +117,7 @@ export default function App() {
 
     if (sharedUrl) {
       setInitialUrl(sharedUrl);
-      void capture({ url: sharedUrl, preset: 'iphone', darkMode: false });
+      void capture({ url: sharedUrl, preset: DEFAULT_PRESET, darkMode: false });
       return;
     }
 
@@ -138,7 +144,7 @@ export default function App() {
           await addBlobs(blobs, false);
         } else if (meta?.url) {
           setInitialUrl(meta.url);
-          await capture({ url: meta.url, preset: 'iphone', darkMode: false });
+          await capture({ url: meta.url, preset: DEFAULT_PRESET, darkMode: false });
         } else {
           setScreen('home');
           setError('That share did not include an image or a link.');

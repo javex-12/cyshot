@@ -323,6 +323,43 @@ async function main() {
     await wait(150);
     assert('redactions can be cleared', (await heightOf()) === beforeTools);
 
+    // Holding a box against the bottom edge must keep panning the image.
+    await page.evaluate(() => {
+      const scroller = document.querySelector('.scroller');
+      if (scroller) scroller.scrollTop = 0;
+    });
+    await wait(150);
+    const scrollerBox = await page.locator('.scroller').boundingBox();
+    const overlayTop = (await page.locator('.overlay').boundingBox()).y;
+    // Drag starts left of centre so the box has a real width; it ends against
+    // the bottom edge, where the editor has to keep scrolling by itself.
+    const autoStartY = overlayTop + 120;
+    await page.mouse.move(midX - 60, autoStartY);
+    await page.mouse.down();
+    await page.mouse.move(midX + 60, scrollerBox.y + scrollerBox.height - 12, { steps: 8 });
+    await wait(800);
+    const autoScroll = await page.evaluate(() => document.querySelector('.scroller')?.scrollTop ?? 0);
+    const liveBox = await page.evaluate(() => {
+      const rect = document.querySelector('.redact-rect');
+      return rect ? rect.getBoundingClientRect().height : 0;
+    });
+    await page.mouse.up();
+    assert('dragging a box to the bottom edge scrolls the image', autoScroll > 40, `scrollTop ${autoScroll}`);
+    assert(
+      'the box keeps growing while the image scrolls',
+      liveBox > (scrollerBox.height - 12) * 0.8,
+      `box ${liveBox.toFixed(0)} in a ${scrollerBox.height.toFixed(0)} view`,
+    );
+    await wait(200);
+    await page.click('button:has-text("Undo box")');
+    await wait(150);
+    assert('the auto-scroll box can be undone', (await page.locator('.tool-note').count()) === 0, 'note still shown');
+    await page.evaluate(() => {
+      const scroller = document.querySelector('.scroller');
+      if (scroller) scroller.scrollTop = 0;
+    });
+    await wait(150);
+
     await page.click('.editor-head button:has-text("Export")');
     await page.waitForSelector('.sheet');
     const [stitchDownload] = await Promise.all([

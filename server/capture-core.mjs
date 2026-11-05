@@ -18,8 +18,15 @@ export class HttpError extends Error {
   }
 }
 
-/** Chromium renders 45k px in ~20s and times out near 120k, so cap the CSS height. */
-export const MAX_CAPTURE_CSS_PX = 15_000;
+/**
+ * Limits. A single shot past ~66k device px starts timing out, so the capture
+ * spends a budget of device px instead of a fixed CSS height: tall pages are
+ * shot at a lower device scale factor so the WHOLE page - footer included -
+ * still fits in one image. Only past the CSS ceiling is anything cut off.
+ */
+export const MAX_CAPTURE_CSS_PX = 30_000;
+export const MAX_DEVICE_PX = 50_000;
+export const MIN_SCALE = 0.5;
 
 export const PRESETS = {
   iphone: {
@@ -121,6 +128,146 @@ export async function assertSafeUrl(raw, { allowPrivate = false, lookup } = {}) 
   return url;
 }
 
+/**
+ * Pin `position: fixed` chrome where the reader would actually find it.
+ *
+ * A fixed header or cookie bar is painted once, against the viewport, so on a
+ * full-page shot a bottom bar lands in the middle of the image and any bar
+ * disappears from the end of the page. Converting those boxes to absolute puts
+ * a top bar at the top of the image and a bottom bar at the bottom, which is
+ * what the page looks like when you reach either end.
+ *
+ * Sticky boxes keep their normal-flow space, so they are simply unstuck
+ * (`position: static`). That leaves a sticky header at the document top and a
+ * sticky bottom bar in flow at the end of the page, instead of both being
+ * painted against a viewport that no longer matches the image.
+ *
+ * Fixed boxes take their size and position from a dock, so they are converted
+ * to absolute at the matching page edge. They are already out of flow, so this
+ * cannot change the document height.
+ */
+async function pinChrome(page, { bottom, viewportHeight }) {
+  await page
+    .evaluate(
+      ({ bottom, viewportHeight }) => {
+        const pinned = [];
+        const unstuck = [];
+        for (const el of Array.from(document.querySelectorAll('body *'))) {
+          const cs = getComputedStyle(el);
+          if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+          if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 8 || rect.height < 4) continue;
+
+          const atTop = rect.top <= 8;
+          const atBottom = rect.bottom >= viewportHeight - 8;
+          if (!atTop && !atBottom) continue;
+
+          if (cs.position === 'sticky') {
+            unstuck.push({ el, atTop });
+            continue;
+          }
+
+          const docX = rect.left + window.scrollX;
+          const docY = atBottom && !atTop ? bottom - rect.height : rect.top + window.scrollY;
+          pinned.push({ el, docX, docY, width: rect.width, height: rect.height });
+        }
+        for (const { el, docX, docY, width, height } of pinned) {
+          el.style.setProperty('position', 'absolute', 'important');
+          el.style.setProperty('top', `${docY}px`, 'important');
+          el.style.setProperty('left', `${docX}px`, 'important');
+          el.style.setProperty('right', 'auto', 'important');
+          el.style.setProperty('bottom', 'auto', 'important');
+          el.style.setProperty('width', `${width}px`, 'important');
+          el.style.setProperty('height', `${height}px`, 'important');
+          el.style.setProperty('transform', 'none', 'important');
+        }
+        // Sticky bars are in flow: drop back to static so they stay in place.
+        for (const { el } of unstuck) {
+          el.style.setProperty('position', 'static', 'important');
+        }
+        return pinned.length + unstuck.length;
+      },
+      { bottom, viewportHeight },
+    )
+    .catch(() => 0);
+}
+
+async function measure(page) {
+  return page.evaluate(() => {
+    const doc = document.documentElement;
+    const body = document.body;
+    return {
+      width: Math.max(doc.scrollWidth, body ? body.scrollWidth : 0, doc.clientWidth),
+      height: Math.max(doc.scrollHeight, body ? body.scrollHeight : 0, doc.clientHeight),
+    };
+  });
+}
+
+/**
+ * Cookies for a signed-in capture.
+ *
+ * Accepts the shapes people actually have: a `Cookie:` request header copied
+ * from DevTools, a bare `a=1; b=2` string, a JSON array exported by a cookie
+ * extension, or `{a: '1'}`. Anything without a domain is scoped to the target
+ * URL, so a paste can never leak to another site.
+ */
+export function normaliseCookies(raw, url) {
+  const origin = url.origin;
+  const out = [];
+  const push = (name, value, extra = {}) => {
+    if (!name || typeof value !== 'string') return;
+    const cookie = { name: String(name).trim(), value };
+    if (extra.domain) {
+      cookie.domain = String(extra.domain);
+      cookie.path = extra.path || '/';
+    } else {
+      cookie.url = origin;
+    }
+    out.push(cookie);
+  };
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (item && typeof item === 'object') push(item.name, item.value, item);
+    }
+    return out.slice(0, 300);
+  }
+
+  if (raw && typeof raw === 'object') {
+    for (const [name, value] of Object.entries(raw)) push(name, String(value));
+    return out.slice(0, 300);
+  }
+
+  if (typeof raw === 'string' && raw.trim()) {
+    const text = raw.trim().replace(/^cookie:\s*/i, '');
+    if (text.startsWith('[') || text.startsWith('{')) {
+      try {
+        return normaliseCookies(JSON.parse(text), url);
+      } catch {
+        // Fall through: treat it as a plain cookie string.
+      }
+    }
+    for (const part of text.split(';')) {
+      const index = part.indexOf('=');
+      if (index < 1) continue;
+      push(part.slice(0, index).trim(), part.slice(index + 1).trim());
+    }
+  }
+  return out.slice(0, 300);
+}
+
+export function normaliseHeaders(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (typeof value !== 'string' || !value.trim()) continue;
+    if (out && Object.keys(out).length >= 20) break;
+    out[String(name).trim()] = value.trim();
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 /** Scroll the document once so lazy content renders, then come back to the top. */
 async function preparePage(page) {
   await page.evaluate(async () => {
@@ -159,44 +306,82 @@ async function captureOnce(browser, url, options, budgetBytes) {
   const cssLimit = clampInt(options.maxHeight, 1000, MAX_CAPTURE_CSS_PX, MAX_CAPTURE_CSS_PX);
   const waitMs = clampInt(options.waitMs, 0, 5000, 350);
 
-  const context = await browser.newContext({
-    viewport: { width: viewportWidth, height: viewportHeight },
-    deviceScaleFactor: dsf,
-    isMobile: preset.isMobile,
-    hasTouch: preset.hasTouch,
-    userAgent: preset.userAgent,
-    colorScheme: options.darkMode ? 'dark' : 'light',
-    reducedMotion: 'reduce',
-    locale: 'en-US',
-  });
+  const cookies = normaliseCookies(options.cookies, url);
+  const headers = normaliseHeaders(options.headers);
 
-  const page = await context.newPage();
-  page.setDefaultTimeout(30_000);
-
-  try {
-    let response;
-    try {
-      response = await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    } catch (error) {
-      throw new HttpError(502, `Could not load that page (${String(error.message || error).split('\n')[0]}).`);
-    }
-
-    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-    await preparePage(page);
-    await page.waitForTimeout(waitMs);
-
-    const dims = await page.evaluate(() => {
-      const doc = document.documentElement;
-      const body = document.body;
-      return {
-        width: Math.max(doc.scrollWidth, body ? body.scrollWidth : 0, doc.clientWidth),
-        height: Math.max(doc.scrollHeight, body ? body.scrollHeight : 0, doc.clientHeight),
-      };
+  const open = async (scale) => {
+    const context = await browser.newContext({
+      viewport: { width: viewportWidth, height: viewportHeight },
+      deviceScaleFactor: scale,
+      isMobile: preset.isMobile,
+      hasTouch: preset.hasTouch,
+      userAgent: preset.userAgent,
+      colorScheme: options.darkMode ? 'dark' : 'light',
+      reducedMotion: 'reduce',
+      locale: 'en-US',
     });
 
-    const cssWidth = Math.max(1, Math.round(dims.width));
-    const cssHeight = Math.max(1, Math.round(Math.min(dims.height, cssLimit)));
-    const truncated = dims.height > cssHeight;
+    try {
+      const page = await context.newPage();
+      page.setDefaultTimeout(30_000);
+
+      if (cookies.length > 0) {
+        try {
+          await context.addCookies(cookies);
+        } catch (error) {
+          throw new HttpError(
+            400,
+            `Those cookies could not be used (${String(error.message || error).split('\n')[0]}). Copy the Cookie header again.`,
+          );
+        }
+      }
+      if (headers) await page.setExtraHTTPHeaders(headers).catch(() => {});
+
+      let response;
+      try {
+        response = await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      } catch (error) {
+        throw new HttpError(502, `Could not load that page (${String(error.message || error).split('\n')[0]}).`);
+      }
+
+      await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+      await preparePage(page);
+      await page.waitForTimeout(waitMs);
+
+      return { context, page, response, dims: await measure(page) };
+    } catch (error) {
+      await context.close().catch(() => {});
+      throw error;
+    }
+  };
+
+  let session = await open(dsf);
+  let { page, response, dims } = session;
+  let scale = dsf;
+
+  try {
+    let cssWidth = Math.max(1, Math.round(dims.width));
+    let cssHeight = Math.max(1, Math.round(Math.min(dims.height, cssLimit)));
+    let truncated = dims.height > cssHeight;
+
+    // Spend a device-pixel budget rather than a fixed height. When the whole
+    // page would not fit in one shot, reload at a smaller scale so the bottom
+    // of the page - footer included - is still captured.
+    if (cssHeight * dsf > MAX_DEVICE_PX) {
+      const smaller = Math.max(MIN_SCALE, Math.round((MAX_DEVICE_PX / cssHeight) * 100) / 100);
+      if (smaller < dsf - 0.02) {
+        await session.context.close().catch(() => {});
+        session = await open(smaller);
+        ({ page, response, dims } = session);
+        scale = smaller;
+        cssWidth = Math.max(1, Math.round(dims.width));
+        cssHeight = Math.max(1, Math.round(Math.min(dims.height, cssLimit)));
+        truncated = dims.height > cssHeight;
+      }
+    }
+
+    await pinChrome(page, { bottom: cssHeight, viewportHeight });
+
     const clip = { x: 0, y: 0, width: cssWidth, height: cssHeight };
     const shot = { fullPage: true, clip, animations: 'disabled', caret: 'hide', timeout: 60_000 };
 
@@ -210,27 +395,29 @@ async function captureOnce(browser, url, options, budgetBytes) {
         buffer = jpeg;
         contentType = 'image/jpeg';
       } else {
-        const half = await page.screenshot({ ...shot, type: 'jpeg', quality: 78, scale: 'css' });
-        if (half.length > budgetBytes) {
+        const smaller = await page.screenshot({ ...shot, type: 'jpeg', quality: 78, scale: 'css' });
+        if (smaller.length > budgetBytes) {
           throw new HttpError(
             413,
-            'That page is too large to return as a single image. Try a shorter page, a smaller device preset, or lower maxHeight.',
+            'That page is too large to return as a single image. Try a shorter page or a smaller device preset.',
           );
         }
-        buffer = half;
+        buffer = smaller;
         contentType = 'image/jpeg';
         downscaled = true;
       }
     }
 
+    const outputScale = downscaled ? 1 : scale;
     const title = await page.title().catch(() => '');
     return {
       buffer,
       contentType,
-      width: Math.round(cssWidth * (downscaled ? 1 : dsf)),
-      height: Math.round(cssHeight * (downscaled ? 1 : dsf)),
+      width: Math.round(cssWidth * outputScale),
+      height: Math.round(cssHeight * outputScale),
       cssWidth,
       cssHeight,
+      scale: outputScale,
       truncated,
       downscaled,
       status: response ? response.status() : null,
@@ -238,7 +425,7 @@ async function captureOnce(browser, url, options, budgetBytes) {
       finalUrl: page.url(),
     };
   } finally {
-    await context.close().catch(() => {});
+    await session.context.close().catch(() => {});
   }
 }
 
@@ -319,6 +506,7 @@ export function createCaptureHandler({ launch, budgetBytes = 4_400_000, maxActiv
         res.setHeader('x-cyshot-height', String(result.height));
         res.setHeader('x-cyshot-css-width', String(result.cssWidth));
         res.setHeader('x-cyshot-css-height', String(result.cssHeight));
+        res.setHeader('x-cyshot-scale', String(result.scale));
         res.setHeader('x-cyshot-truncated', result.truncated ? '1' : '0');
         res.setHeader('x-cyshot-downscaled', result.downscaled ? '1' : '0');
         res.setHeader('x-cyshot-title', encodeURIComponent(result.title ?? ''));

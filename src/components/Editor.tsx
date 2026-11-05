@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildLayout,
   buildSections,
@@ -27,6 +27,26 @@ function normalise(x0: number, y0: number, x1: number, y1: number): Rect {
     h: Math.abs(y1 - y0),
   };
 }
+
+/**
+ * A drag anchor in document coordinates, plus the pointer and scroll position
+ * where it started. Keeping those lets a box keep growing while the document
+ * scrolls underneath the finger.
+ */
+type DragAnchor = {
+  /** Document coordinates where the gesture started. */
+  x: number;
+  y: number;
+  /** Where the pointer first went down; never changes during the drag. */
+  originClientX: number;
+  originClientY: number;
+  /** Most recent pointer position, used by the edge-scroll loop. */
+  lastClientX: number;
+  lastClientY: number;
+  /** Scroll offset at pointerdown, so scrolling does not look like dragging. */
+  scroll: number;
+  pointerId: number;
+};
 
 export function Editor({
   frames,
@@ -58,11 +78,18 @@ export function Editor({
   const [drag, setDrag] = useState<Rect | null>(null);
   const [selection, setSelection] = useState<Rect | null>(null);
   const [showWarnings, setShowWarnings] = useState(warnings.length > 0);
-  const dragRef = useRef<{ startX: number; startY: number; pointerId: number } | null>(null);
+  const dragRef = useRef<DragAnchor | null>(null);
+  const edgeRef = useRef<{ raf: number; velocity: number; tick: (() => void) | null }>({
+    raf: 0,
+    velocity: 0,
+    tick: null,
+  });
 
   const layout = useMemo(() => buildLayout(doc.width, doc.height, ops), [doc.width, doc.height, ops]);
   const sections = useMemo(() => buildSections(doc.height, ops.dividers), [doc.height, ops.dividers]);
   const zoom = viewport.w > 0 ? Math.min(1, viewport.w / layout.width) : 1;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -126,31 +153,112 @@ export function Editor({
     return { x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom };
   };
 
+  const stopEdgeScroll = useCallback(() => {
+    const edge = edgeRef.current;
+    edge.velocity = 0;
+    edge.tick = null;
+    if (edge.raf) cancelAnimationFrame(edge.raf);
+    edge.raf = 0;
+  }, []);
+
+  const runEdgeScroll = useCallback(() => {
+    const el = scrollerRef.current;
+    const edge = edgeRef.current;
+    const tick = edge.tick;
+    if (!el || !tick) {
+      edge.raf = 0;
+      return;
+    }
+    const before = el.scrollTop;
+    el.scrollTop = before + edge.velocity;
+    if (el.scrollTop !== before) tick();
+    edge.raf = requestAnimationFrame(runEdgeScroll);
+  }, []);
+
+  /** Hold a drag near the top or bottom of the view to keep scrolling it. */
+  const trackEdge = useCallback(
+    (clientY: number, tick: () => void) => {
+      const el = scrollerRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const zone = Math.min(72, rect.height * 0.22);
+      const fromTop = clientY - rect.top;
+      const fromBottom = rect.bottom - clientY;
+      let velocity = 0;
+      if (fromTop < zone) velocity = -Math.max(1, Math.round((1 - fromTop / zone) * 26));
+      else if (fromBottom < zone) velocity = Math.max(1, Math.round((1 - fromBottom / zone) * 26));
+
+      const edge = edgeRef.current;
+      edge.velocity = velocity;
+      edge.tick = velocity !== 0 ? tick : null;
+      if (velocity !== 0 && !edge.raf) edge.raf = requestAnimationFrame(runEdgeScroll);
+      if (velocity === 0 && edge.raf) {
+        cancelAnimationFrame(edge.raf);
+        edge.raf = 0;
+      }
+    },
+    [runEdgeScroll],
+  );
+
+  useEffect(() => stopEdgeScroll, [stopEdgeScroll]);
+
+  const contentPoint = (anchor: DragAnchor, clientX: number, clientY: number) => {
+    const scroll = scrollerRef.current?.scrollTop ?? 0;
+    const z = zoomRef.current || 1;
+    return {
+      x: anchor.x + (clientX - anchor.originClientX) / z,
+      y: anchor.y + (clientY - anchor.originClientY + (scroll - anchor.scroll)) / z,
+    };
+  };
+
+  const extendDrag = (anchor: DragAnchor, clientX: number, clientY: number) => {
+    anchor.lastClientX = clientX;
+    anchor.lastClientY = clientY;
+    const p = contentPoint(anchor, clientX, clientY);
+    setDrag(normalise(anchor.x, anchor.y, p.x, p.y));
+  };
+
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (tool === 'trim') return;
     const p = pointFrom(event);
-    dragRef.current = { startX: p.x, startY: p.y, pointerId: event.pointerId };
+    const anchor: DragAnchor = {
+      x: p.x,
+      y: p.y,
+      originClientX: event.clientX,
+      originClientY: event.clientY,
+      lastClientX: event.clientX,
+      lastClientY: event.clientY,
+      scroll: scrollerRef.current?.scrollTop ?? 0,
+      pointerId: event.pointerId,
+    };
+    dragRef.current = anchor;
     if (tool === 'region' || tool === 'redact') {
       event.currentTarget.setPointerCapture(event.pointerId);
       setDrag({ x: p.x, y: p.y, w: 0, h: 0 });
+      trackEdge(event.clientY, () => extendDrag(anchor, anchor.lastClientX, anchor.lastClientY));
     }
   };
 
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const start = dragRef.current;
-    if (!start) return;
-    const p = pointFrom(event);
+    const anchor = dragRef.current;
+    if (!anchor) return;
     if (tool === 'region' || tool === 'redact') {
-      setDrag(normalise(start.startX, start.startY, p.x, p.y));
+      extendDrag(anchor, event.clientX, event.clientY);
+      trackEdge(event.clientY, () => extendDrag(anchor, anchor.lastClientX, anchor.lastClientY));
+    } else {
+      anchor.lastClientX = event.clientX;
+      anchor.lastClientY = event.clientY;
     }
   };
 
   const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    const start = dragRef.current;
+    const anchor = dragRef.current;
     dragRef.current = null;
-    if (!start) return;
-    const p = pointFrom(event);
-    const rect = normalise(start.startX, start.startY, p.x, p.y);
+    stopEdgeScroll();
+    if (!anchor) return;
+
+    const p = contentPoint(anchor, event.clientX, event.clientY);
+    const rect = normalise(anchor.x, anchor.y, p.x, p.y);
     const moved = rect.w > 6 || rect.h > 6;
 
     if (tool === 'cut') {
@@ -181,11 +289,22 @@ export function Editor({
   const dragHandle = (which: 'top' | 'bottom') => (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
-    const startY = event.clientY;
     const startTrimTop = opsRef.current.trimTop;
     const startTrimBottom = opsRef.current.trimBottom;
-    const move = (ev: PointerEvent) => {
-      const delta = (ev.clientY - startY) / zoom;
+    const anchor: DragAnchor = {
+      x: 0,
+      y: 0,
+      originClientX: event.clientX,
+      originClientY: event.clientY,
+      lastClientX: event.clientX,
+      lastClientY: event.clientY,
+      scroll: scrollerRef.current?.scrollTop ?? 0,
+      pointerId: event.pointerId,
+    };
+    const apply = (clientY: number) => {
+      anchor.lastClientX = event.clientX;
+      anchor.lastClientY = clientY;
+      const delta = contentPoint(anchor, event.clientX, clientY).y;
       const current = opsRef.current;
       if (which === 'top') {
         onChange({
@@ -199,12 +318,19 @@ export function Editor({
         });
       }
     };
+    const move = (ev: PointerEvent) => {
+      apply(ev.clientY);
+      trackEdge(ev.clientY, () => apply(anchor.lastClientY));
+    };
     const up = () => {
+      stopEdgeScroll();
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   };
 
   const keepAbove = () => {
@@ -265,10 +391,13 @@ export function Editor({
             className="viewcanvas"
             style={{ width: viewport.w, height: viewport.h }}
             aria-label="Stitched screenshot"
+            draggable={false}
           />
           <div
             className={`overlay tool-${tool}`}
             style={{ height: layout.height * zoom }}
+            draggable={false}
+            onDragStart={(event) => event.preventDefault()}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
@@ -332,7 +461,8 @@ export function Editor({
         {tool === 'trim' && (
           <>
             <p className="tool-hint">
-              Scroll to where you want the shot to start or stop, then tap. Or drag the handles.
+              Scroll to where the shot should start or stop, then tap. Or drag a handle — holding it at the
+              screen edge keeps scrolling.
             </p>
             <div className="tool-actions">
               <button type="button" className="secondary" onClick={keepAbove}>
@@ -411,7 +541,9 @@ export function Editor({
 
         {tool === 'redact' && (
           <>
-            <p className="tool-hint">Drag a box to black out anything private. Scrolling pauses while you draw.</p>
+            <p className="tool-hint">
+              Drag a box to black out anything private. Hold near the top or bottom edge to keep scrolling.
+            </p>
             <div className="tool-actions">
               <button
                 type="button"

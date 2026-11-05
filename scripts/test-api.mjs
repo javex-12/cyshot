@@ -46,8 +46,17 @@ function check(name, fn) {
   }
 }
 
-const fixtureServer = http.createServer((_req, res) => {
+const fixtureServer = http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  // /private reports, in its <title>, whether the request arrived signed in.
+  if (new URL(req.url, 'http://x').pathname === '/private') {
+    const cookie = req.headers.cookie ?? '';
+    const token = req.headers.authorization === 'Bearer test-token';
+    const signedIn = /session=ok/.test(cookie) || token;
+    const title = signedIn ? (token ? 'Signed in with token' : 'Signed in with cookie') : 'Signed out';
+    res.end(page(20).replace('<title>API fixture</title>', `<title>${title}</title>`));
+    return;
+  }
   res.end(page(70)); // ~6.4k CSS px
 });
 const tallServer = http.createServer((_req, res) => {
@@ -153,7 +162,38 @@ const main = async () => {
     assert.equal(noUrl.response.status, 400);
   });
 
-  // 4. SSRF guard
+  // 4. signed-in captures
+  const privateUrl = `http://127.0.0.1:${FIXTURE_PORT}/private`;
+  const anon = await post({ url: privateUrl, preset: 'iphone' });
+  check('a private page is captured signed out without credentials', () => {
+    assert.equal(decodeURIComponent(anon.response.headers.get('x-cyshot-title') ?? ''), 'Signed out');
+  });
+
+  const withCookie = await post({ url: privateUrl, preset: 'iphone', cookies: 'session=ok; theme=dark' });
+  check('a pasted cookie header signs the capture in', () => {
+    assert.equal(
+      decodeURIComponent(withCookie.response.headers.get('x-cyshot-title') ?? ''),
+      'Signed in with cookie',
+    );
+  });
+
+  const copiedHeader = await post({ url: privateUrl, preset: 'iphone', cookies: 'Cookie: session=ok' });
+  check('a cookie string copied with its "Cookie:" prefix also works', () => {
+    assert.equal(
+      decodeURIComponent(copiedHeader.response.headers.get('x-cyshot-title') ?? ''),
+      'Signed in with cookie',
+    );
+  });
+
+  const withToken = await post({ url: privateUrl, preset: 'iphone', headers: { authorization: 'Bearer test-token' } });
+  check('extra request headers reach the page', () => {
+    assert.equal(
+      decodeURIComponent(withToken.response.headers.get('x-cyshot-title') ?? ''),
+      'Signed in with token',
+    );
+  });
+
+  // 5. SSRF guard
   delete process.env.ALLOW_PRIVATE;
   const blocked = await post({ url: `http://127.0.0.1:${FIXTURE_PORT}/` });
   check('private addresses are refused when ALLOW_PRIVATE is unset', () => {
