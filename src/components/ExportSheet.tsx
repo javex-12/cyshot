@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   canShareFiles,
   download,
   exportImage,
   exportPdf,
-  planScale,
   renderDocument,
   share,
   type ExportResult,
@@ -28,10 +27,6 @@ export function ExportSheet({
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const scale = useMemo(
-    () => planScale(input.layout.width, input.layout.height),
-    [input.layout.width, input.layout.height],
-  );
   const shareable = canShareFiles();
   const pixels = input.layout.width * input.layout.height;
 
@@ -118,12 +113,11 @@ export function ExportSheet({
           <strong>
             {input.layout.width} × {input.layout.height}
           </strong>
-          <span>{(pixels / 1_000_000).toFixed(1)}M pixels</span>
+          <span>{(pixels / 1_000_000).toFixed(1)}M pixels · {prepared && prepared.scale >= 1 ? '100% Original Resolution' : prepared ? `${Math.round(prepared.scale * 100)}% resolution` : 'Best Resolution'}</span>
         </div>
-        {scale < 1 && (
+        {prepared && prepared.scale < 1 && (
           <p className="tool-note">
-            PNG/JPEG will be scaled to {Math.round(scale * 100)}% to fit this device's canvas limit. PDF keeps
-            full resolution.
+            PNG/JPEG scaled to {Math.round(prepared.scale * 100)}% to fit this device's memory. PDF preserves 100% full resolution.
           </p>
         )}
       </div>

@@ -25,7 +25,7 @@ export class HttpError extends Error {
  * still fits in one image. Only past the CSS ceiling is anything cut off.
  */
 export const MAX_CAPTURE_CSS_PX = 30_000;
-export const MAX_DEVICE_PX = 50_000;
+export const MAX_DEVICE_PX = 80_000;
 export const MIN_SCALE = 0.5;
 
 export const PRESETS = {
@@ -302,7 +302,14 @@ async function captureOnce(browser, url, options, budgetBytes) {
   const preset = PRESETS[options.preset] ?? PRESETS.iphone;
   const viewportWidth = clampInt(options.width, 200, 2400, preset.width);
   const viewportHeight = clampInt(options.height, 200, 3000, preset.height);
-  const dsf = clampNum(options.deviceScaleFactor, 1, 4, preset.deviceScaleFactor);
+  const defaultDsf = options.quality === 'best'
+    ? (options.preset === 'desktop' ? 2 : preset.deviceScaleFactor)
+    : options.quality === 'high'
+      ? Math.min(2, preset.deviceScaleFactor)
+      : options.quality === 'standard'
+        ? 1
+        : preset.deviceScaleFactor;
+  const dsf = clampNum(options.deviceScaleFactor, 1, 4, defaultDsf);
   const cssLimit = clampInt(options.maxHeight, 1000, MAX_CAPTURE_CSS_PX, MAX_CAPTURE_CSS_PX);
   const waitMs = clampInt(options.waitMs, 0, 5000, 350);
 
@@ -390,21 +397,27 @@ async function captureOnce(browser, url, options, budgetBytes) {
     let downscaled = false;
 
     if (buffer.length > budgetBytes) {
-      const jpeg = await page.screenshot({ ...shot, type: 'jpeg', quality: 84 });
-      if (jpeg.length <= budgetBytes) {
-        buffer = jpeg;
+      const jpeg90 = await page.screenshot({ ...shot, type: 'jpeg', quality: 90 });
+      if (jpeg90.length <= budgetBytes) {
+        buffer = jpeg90;
         contentType = 'image/jpeg';
       } else {
-        const smaller = await page.screenshot({ ...shot, type: 'jpeg', quality: 78, scale: 'css' });
-        if (smaller.length > budgetBytes) {
-          throw new HttpError(
-            413,
-            'That page is too large to return as a single image. Try a shorter page or a smaller device preset.',
-          );
+        const jpeg82 = await page.screenshot({ ...shot, type: 'jpeg', quality: 82 });
+        if (jpeg82.length <= budgetBytes) {
+          buffer = jpeg82;
+          contentType = 'image/jpeg';
+        } else {
+          const smaller = await page.screenshot({ ...shot, type: 'jpeg', quality: 78, scale: 'css' });
+          if (smaller.length > budgetBytes) {
+            throw new HttpError(
+              413,
+              'That page is too large to return as a single image. Try a shorter page or a smaller device preset.',
+            );
+          }
+          buffer = smaller;
+          contentType = 'image/jpeg';
+          downscaled = true;
         }
-        buffer = smaller;
-        contentType = 'image/jpeg';
-        downscaled = true;
       }
     }
 

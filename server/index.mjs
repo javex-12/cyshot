@@ -9,7 +9,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { prepareBrowserEnv } from './browser-env.mjs';
-import captureHandler from '../api/capture.mjs';
+import { createCaptureHandler } from './capture-core.mjs';
+import { launchChromium } from './launch-chromium.mjs';
 import healthHandler from '../api/health.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,9 @@ const PORT = Number(process.env.PORT || 8787);
 
 // Chromium needs libraries and fonts a bare host may not have.
 prepareBrowserEnv(ROOT);
+
+// Self-hosted server allows generous response sizes for best resolution (50MB)
+const captureHandler = createCaptureHandler({ launch: launchChromium, budgetBytes: 50_000_000 });
 
 const app = express();
 app.disable('x-powered-by');

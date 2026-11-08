@@ -6,11 +6,13 @@
  */
 
 export type Preset = 'iphone' | 'android' | 'desktop';
+export type Quality = 'best' | 'high' | 'standard';
 
 export interface CaptureRequest {
   url: string;
   preset: Preset;
   darkMode: boolean;
+  quality?: Quality;
   maxHeight?: number;
   /** Cookie header text, or a JSON cookie export, for signed-in pages. */
   cookies?: string;
@@ -88,6 +90,7 @@ export async function capturePage(request: CaptureRequest): Promise<CaptureResul
         url: withScheme(request.url),
         preset: request.preset,
         darkMode: request.darkMode,
+        quality: request.quality ?? 'best',
         maxHeight: request.maxHeight ?? MAX_CAPTURE_HEIGHT,
         cookies: request.cookies?.trim() || undefined,
         headers: request.headers,

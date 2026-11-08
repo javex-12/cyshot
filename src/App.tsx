@@ -7,6 +7,7 @@ import { disposeFrames, loadFrames, stitchLoadedFrames, type LoadedFrame } from 
 import { buildLayout, emptyOps, type EditOps } from './lib/document';
 import { capturePage, MAX_CAPTURE_HEIGHT, type CaptureRequest } from './lib/capture';
 import { detectPlatform } from './lib/platform';
+import { isVideoFile, startScreenCapture } from './lib/video';
 import type { StitchResult } from './lib/stitcher';
 
 type Screen = 'home' | 'busy' | 'editor';
@@ -48,7 +49,14 @@ export default function App() {
     if (blobs.length === 0) return;
     setError(null);
     setScreen('busy');
-    setBusyLabel(blobs.length === 1 ? 'Reading image' : `Reading ${blobs.length} screenshots`);
+    const hasVideo = blobs.some(isVideoFile);
+    setBusyLabel(
+      hasVideo
+        ? 'Extracting sharp frames from screen recording'
+        : blobs.length === 1
+          ? 'Reading image'
+          : `Reading ${blobs.length} screenshots`,
+    );
     setProgress(0);
     await tick();
 
@@ -57,14 +65,14 @@ export default function App() {
     try {
       loaded = await loadFrames(blobs, (done, total) => setProgress(done / total), base[0]?.width);
     } catch {
-      setError('That file could not be read as an image.');
+      setError('That file could not be read as an image or video.');
       setScreen('home');
       return;
     }
 
     const all = [...base, ...loaded];
     if (all.length > 1) {
-      setBusyLabel(`Finding overlaps across ${all.length} frames`);
+      setBusyLabel(`Finding overlaps & stitching ${all.length} frames in best resolution`);
       setProgress(0);
       await tick();
     }
@@ -106,6 +114,17 @@ export default function App() {
   );
 
   const pickFiles = useCallback(() => fileInputRef.current?.click(), []);
+
+  const handleStartRecord = useCallback(async () => {
+    try {
+      await startScreenCapture(
+        (blobs) => void addBlobs(blobs, false),
+        (err) => setError(err.message),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start screen recording.');
+    }
+  }, [addBlobs]);
 
   // Share target: /?share=<id> carries images, /?url=<url> carries a link.
   useEffect(() => {
@@ -173,7 +192,7 @@ export default function App() {
         ref={fileInputRef}
         className="visually-hidden"
         type="file"
-        accept="image/*"
+        accept="image/*,video/*"
         multiple
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
@@ -195,6 +214,7 @@ export default function App() {
           <Home
             onCapture={(request) => void capture(request)}
             onPickFiles={pickFiles}
+            onStartRecord={handleStartRecord}
             initialUrl={initialUrl}
             autoCapture={autoCapture}
             busy={false}

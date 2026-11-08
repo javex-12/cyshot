@@ -4,6 +4,7 @@
 
 import { stitchWith, type FramePixels, type StitchResult } from './stitcher';
 import type { FrameSource } from './render';
+import { isVideoFile, extractFramesFromVideo } from './video';
 
 export interface LoadedFrame extends FrameSource {
   id: string;
@@ -12,8 +13,8 @@ export interface LoadedFrame extends FrameSource {
   height: number;
 }
 
-/** Very wide inputs (4K desktop screenshots) are scaled down to stay in memory. */
-const MAX_WIDTH = 2400;
+/** Very wide inputs (above 4K) are clamped to stay in memory. */
+const MAX_WIDTH = 4096;
 
 let frameCounter = 0;
 
@@ -43,11 +44,24 @@ export async function loadFrames(
   onProgress?: (done: number, total: number) => void,
   widthOverride?: number,
 ): Promise<LoadedFrame[]> {
+  // If any input is a video file, unpack video frames first
+  const imageBlobs: Blob[] = [];
+  for (const blob of blobs) {
+    if (isVideoFile(blob)) {
+      const extracted = await extractFramesFromVideo(blob, (d, t) => {
+        onProgress?.(d, t);
+      });
+      imageBlobs.push(...extracted);
+    } else {
+      imageBlobs.push(blob);
+    }
+  }
+
   const frames: LoadedFrame[] = [];
   let targetWidth = widthOverride ?? 0;
 
-  for (let i = 0; i < blobs.length; i++) {
-    const bitmap = await createImageBitmap(blobs[i], { imageOrientation: 'from-image' });
+  for (let i = 0; i < imageBlobs.length; i++) {
+    const bitmap = await createImageBitmap(imageBlobs[i], { imageOrientation: 'from-image' });
     const width = targetWidth || Math.min(bitmap.width, MAX_WIDTH);
     if (!targetWidth) targetWidth = width;
 
@@ -58,7 +72,7 @@ export async function loadFrames(
       bitmap.close();
       frames.push({ id: nextId(), bitmap: canvas, width: canvas.width, height: canvas.height });
     }
-    onProgress?.(i + 1, blobs.length);
+    onProgress?.(i + 1, imageBlobs.length);
   }
 
   return frames;

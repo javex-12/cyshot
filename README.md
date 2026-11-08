@@ -9,17 +9,21 @@ editing happen in the browser.
 
 ## What it does
 
-- **Capture a URL at phone size.** Rendered in headless Chromium at an iPhone/Android/desktop
-  viewport, scrolled once so lazy content loads, then shot whole (up to 15,000 CSS px).
-- **Stitch screenshots you already have.** Pick 2–15 shots taken while scrolling. Overlap is
-  detected automatically, duplicate frames are dropped, and sticky headers/footers are
-  collapsed instead of repeated at every seam.
+- **Capture a URL at Best Resolution.** Rendered in headless Chromium at an iPhone/Android/desktop
+  viewport with Ultra HD (3x Retina), High (2x), and Standard (1x) options.
+- **Capture ANY App or Website from Screen Recordings.** Turn a quick 3-second screen recording
+  (.mp4, .mov, or live screen record) of any app (WhatsApp, Instagram, Twitter, Settings) or
+  authorized web page into a pixel-perfect long screenshot.
+- **Simple Authorized Web Capture.** Capture paywalled or logged-in pages on mobile easily via
+  screen recording or a 1-tap Safari/Chrome Bookmarklet — no DevTools or cookie copying required.
+- **High-Precision Stitching with Auto-Ordering.** Pick screenshots in any order (even reverse
+  chronological from mobile photo pickers). Automatically removes sticky headers, status bars, and
+  bottom navigation bars while preserving 100% full original resolution.
 - **Freehand finishing.** Trim from the top or bottom at the scroll position you choose, place
   cuts and drop the parts you don't want, keep only a column, black out private details.
-- **Export.** PNG or JPEG, a paged PDF (full resolution, best for very long shots), or straight
-  to the OS share sheet.
-- **Share target (Android).** Installed to the home screen, cyshot appears in the share sheet,
-  so a link or a screenshot goes straight into a long capture.
+- **Export in Full Resolution.** 100% original quality PNG/JPEG, paged PDF, or directly to the OS share sheet.
+- **Works seamlessly on iOS & Android.** Installable PWA with Android Web Share Target support and
+  iOS Safari Bookmarklet & Home Screen guidance.
 
 ## Quick start
 

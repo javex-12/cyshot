@@ -3,6 +3,43 @@
   "name": "hy",
   "createdAt": "2026-11-08T06:56:41.913Z",
   "filename": "271f3812-7158-485f-829a-2d5b2d82d601.json",
-  "geminiStarted": false,
-  "messages": []
+  "geminiStarted": true,
+  "messages": [
+    {
+      "id": "8cd93778-3a78-42db-a6e4-c0e101d77cc6",
+      "role": "user",
+      "content": "hy",
+      "status": "pending",
+      "model": "gemini-3.8-flash-high",
+      "client_type": "gemini-bridge",
+      "parent_message_id": null,
+      "created_at": "2026-11-08T06:57:18.884Z",
+      "sender": "ios",
+      "is_cancelled": false
+    },
+    {
+      "id": "d88c8e6c-7204-44b0-8197-897854ddd6e8",
+      "role": "agent",
+      "content": "Hello! How can I help you with **cyshot** today?",
+      "status": "completed",
+      "model": "gemini-3.8-flash-high",
+      "client_type": "gemini-bridge",
+      "parent_message_id": "8cd93778-3a78-42db-a6e4-c0e101d77cc6",
+      "created_at": "2026-11-08T06:57:29.361Z",
+      "sender": "macOS",
+      "is_cancelled": false
+    },
+    {
+      "id": "ad91c51e-548a-4d21-a811-2001e3df7fe9",
+      "role": "user",
+      "content": "cool. so cyshot have many many errors and limitations. and what I want you to do is first: to be able to make both android and iOS user use it. 2 to be able to take any screen of a website or APP on THE BEST RESOLUTION (the current resolution is very bad, and if only works for website not app).3. to be able to screen any website on my phone even if they website is authorised, as long as I can authorised onto the website (the current methods is hard, technical users do not know about cache or so, so make it very super simple). 4. the patch screenshot is bad, it just take any screen and put it together the resolutions is worst especially for many patch pic, and how it patch is bad...",
+      "status": "pending",
+      "model": "gemini-3.8-flash-high",
+      "client_type": "gemini-bridge",
+      "parent_message_id": null,
+      "created_at": "2026-11-08T07:01:47.985Z",
+      "sender": "ios",
+      "is_cancelled": false
+    }
+  ]
 }

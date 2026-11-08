@@ -17,12 +17,12 @@ import { paintRedactions, paintSlice, renderSlice } from './render';
  * is silent (you get a blank canvas), so `canRender` probes for real.
  */
 function canvasLimits(): { area: number; dim: number } {
-  if (typeof navigator === 'undefined') return { area: 16_000_000, dim: 16_384 };
+  if (typeof navigator === 'undefined') return { area: 64_000_000, dim: 16_384 };
   const ua = navigator.userAgent;
   const ios =
     /iPad|iPhone|iPod/.test(ua) ||
     (navigator.platform === 'MacIntel' && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1);
-  return ios ? { area: 16_000_000, dim: 16_384 } : { area: 64_000_000, dim: 32_767 };
+  return ios ? { area: 64_000_000, dim: 16_384 } : { area: 128_000_000, dim: 32_767 };
 }
 
 export interface RenderInput {
@@ -59,35 +59,40 @@ function allocate(width: number, height: number): HTMLCanvasElement | null {
   }
 }
 
-export function renderDocument(input: RenderInput): { canvas: HTMLCanvasElement; scale: number } {
+export function renderDocument(input: RenderInput, preferFullResolution = true): { canvas: HTMLCanvasElement; scale: number } {
   const { frames, placements, layout, redactions } = input;
-  let scale = planScale(layout.width, layout.height);
+  // Always attempt 100% full original resolution first if requested
+  const scalesToTry: number[] = preferFullResolution
+    ? [1.0, planScale(layout.width, layout.height)]
+    : [planScale(layout.width, layout.height)];
 
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const width = Math.max(1, Math.round(layout.width * scale));
-    const height = Math.max(1, Math.round(layout.height * scale));
-    const canvas = allocate(width, height);
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('Could not create a 2D canvas context');
-      ctx.clearRect(0, 0, width, height);
+  for (let s of scalesToTry) {
+    if (s <= 0) continue;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const width = Math.max(1, Math.round(layout.width * s));
+      const height = Math.max(1, Math.round(layout.height * s));
+      const canvas = allocate(width, height);
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('Could not create a 2D canvas context');
+        ctx.clearRect(0, 0, width, height);
 
-      // Paint in strips so the browser never sees one huge draw call. Each
-      // strip is placed at its own position in the output canvas.
-      const stripOut = 2000 / scale;
-      for (let y = 0; y < layout.height; y += stripOut) {
-        const slice = {
-          outY0: y,
-          outY1: Math.min(layout.height, y + stripOut),
-          scale,
-          dy: y * scale,
-        };
-        paintSlice(ctx, frames, placements, layout, slice);
-        paintRedactions(ctx, layout, redactions, slice);
+        // Paint in strips so the browser never sees one huge draw call.
+        const stripOut = 2000 / s;
+        for (let y = 0; y < layout.height; y += stripOut) {
+          const slice = {
+            outY0: y,
+            outY1: Math.min(layout.height, y + stripOut),
+            scale: s,
+            dy: y * s,
+          };
+          paintSlice(ctx, frames, placements, layout, slice);
+          paintRedactions(ctx, layout, redactions, slice);
+        }
+        return { canvas, scale: s };
       }
-      return { canvas, scale };
+      s = Math.max(0.05, Math.round(s * 0.75 * 100) / 100);
     }
-    scale = Math.max(0.05, Math.round(scale * 0.75 * 100) / 100);
   }
 
   throw new Error('This device could not allocate a canvas for the image. Export as PDF instead.');

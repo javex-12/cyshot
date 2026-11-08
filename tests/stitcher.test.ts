@@ -173,4 +173,35 @@ describe('stitchFrames', () => {
     const result = stitchFrames(frames);
     expect(result.placements[1].docY).toBe(200);
   });
+
+  it('automatically detects and stitches reverse-order screenshots from mobile galleries', () => {
+    // Mobile galleries often yield newest-first: [frame 2, frame 1, frame 0]
+    const f0 = frameAt(doc, 0, V);
+    const f1 = frameAt(doc, 300, V);
+    const f2 = frameAt(doc, 600, V);
+    const reversed = [f2, f1, f0];
+    const result = stitchFrames(reversed);
+    expect(result.warnings.filter((w) => w.kind === 'no-overlap')).toHaveLength(0);
+    expect(result.placements[0].frameIndex).toBe(2); // f0 is first
+    expect(result.placements[1].frameIndex).toBe(1); // f1 is second
+    expect(result.placements[2].frameIndex).toBe(0); // f2 is third
+  });
+
+  it('matches across status bars with simulated clock minute change', () => {
+    // Simulate iOS status bar at top 50px, but with clock noise in top left corner (e.g. 9:41 vs 9:42)
+    const a = withStickyHeader(frameAt(doc, 0, V), 50);
+    const b = withStickyHeader(frameAt(doc, 250, V), 50);
+    // Add noise to clock digits in frame b (x: 10..30, y: 15..25)
+    for (let y = 15; y < 25; y++) {
+      for (let x = 10; x < 30; x++) {
+        const i = (y * b.width + x) * 4;
+        b.data[i] = 200;
+        b.data[i + 1] = 200;
+      }
+    }
+    const m = estimateMatch(a, b);
+    expect(m.matched).toBe(true);
+    expect(m.offset).toBe(250);
+    expect(m.topFixed).toBeGreaterThanOrEqual(45);
+  });
 });

@@ -3,11 +3,11 @@
  *
  * Pure pixel maths, no DOM: the same code runs in the browser and in tests.
  *
- * Given consecutive viewport frames of the same page, we need to work out how
+ * Given consecutive viewport frames of the same page or app, we work out how
  * far the content moved between them, then composite the frames into one tall
- * image. Screenshots usually have a sticky header (and sometimes a sticky
- * footer) that does not move, so the match has to ignore those bands and they
- * must be skipped when compositing - otherwise the header repeats at every seam.
+ * image. Screenshots usually have a sticky header (status bar, app bar) and
+ * sometimes a sticky footer (tab bar, home indicator) that do not move, so the
+ * match ignores those bands and skips them when compositing.
  */
 
 export interface FramePixels {
@@ -63,9 +63,11 @@ export interface MatchOptions {
   minOverlap?: number;
   /** Mean absolute error above which we treat the frames as unmatched. */
   threshold?: number;
+  /** Whether to automatically detect and correct reverse or out-of-order screenshots. */
+  autoOrder?: boolean;
 }
 
-/** Column buckets per row signature. Fewer = faster, more = more precise. */
+/** Column buckets per row signature. */
 const BUCKETS = 16;
 const DEFAULT_THRESHOLD = 7.5;
 const STICKY_EPS = 1.2;
@@ -101,7 +103,7 @@ function signatures(frame: FramePixels): Float32Array {
 
 const sigCache = new WeakMap<FramePixels, Float32Array>();
 
-function sigOf(frame: FramePixels): Float32Array {
+export function sigOf(frame: FramePixels): Float32Array {
   let s = sigCache.get(frame);
   if (!s) {
     s = signatures(frame);
@@ -111,11 +113,25 @@ function sigOf(frame: FramePixels): Float32Array {
 }
 
 /** Mean absolute difference between the two signatures at the same row. */
-function rowDistance(sigA: Float32Array, sigB: Float32Array, y: number): number {
+export function rowDistance(sigA: Float32Array, sigB: Float32Array, y: number): number {
   const off = y * BUCKETS;
   let sum = 0;
   for (let b = 0; b < BUCKETS; b++) sum += Math.abs(sigA[off + b] - sigB[off + b]);
   return sum / BUCKETS;
+}
+
+/**
+ * Checks if a row is part of a fixed band (status bar / header / footer).
+ * Allows for localized variance such as clock digits or battery percentage by
+ * verifying that the vast majority (>= 75%) of horizontal column buckets match identically.
+ */
+function isStickyRow(sigA: Float32Array, sigB: Float32Array, y: number): boolean {
+  const off = y * BUCKETS;
+  let matching = 0;
+  for (let b = 0; b < BUCKETS; b++) {
+    if (Math.abs(sigA[off + b] - sigB[off + b]) < STICKY_EPS) matching++;
+  }
+  return matching >= Math.floor(BUCKETS * 0.75);
 }
 
 /** How much visual content a row has. Flat rows match anything, so they are weak evidence. */
@@ -138,7 +154,7 @@ function rowWeight(sig: Float32Array, y: number): number {
 function detectTopFixed(sigA: Float32Array, sigB: Float32Array, h: number): number {
   const cap = Math.floor(h * 0.3);
   let y = 0;
-  while (y < cap && rowDistance(sigA, sigB, y) < STICKY_EPS) y++;
+  while (y < cap && isStickyRow(sigA, sigB, y)) y++;
   // A whole-frame match is "same screen", not a sticky band.
   return y >= cap ? 0 : y;
 }
@@ -147,7 +163,7 @@ function detectBottomFixed(sigA: Float32Array, sigB: Float32Array, h: number, to
   const cap = Math.floor(h * 0.25);
   let y = h - 1;
   let n = 0;
-  while (n < cap && y > topFixed && rowDistance(sigA, sigB, y) < STICKY_EPS) {
+  while (n < cap && y > topFixed && isStickyRow(sigA, sigB, y)) {
     y--;
     n++;
   }
@@ -235,9 +251,7 @@ export function estimateMatch(prev: FramePixels, next: FramePixels, opts: MatchO
 
 /**
  * Work out where every frame belongs in the final document.
- *
- * Frames are fetched on demand so a caller holding decoded images can stitch
- * without keeping every frame's raw pixels in memory at once.
+ * Automatically checks for reverse-order inputs (common on mobile photo pickers).
  */
 export function stitchWith(
   count: number,
@@ -246,45 +260,68 @@ export function stitchWith(
 ): StitchResult {
   if (count === 0) throw new Error('stitchFrames: no frames');
 
-  const first = get(0);
+  // Check if frames were supplied in reverse order (e.g. from newest-first mobile gallery)
+  let order = Array.from({ length: count }, (_, i) => i);
+  if (opts.autoOrder !== false && count >= 2) {
+    const f0 = get(0);
+    const f1 = get(1);
+    const mForward = estimateMatch(f0, f1, opts);
+    const mReverse = estimateMatch(f1, f0, opts);
+
+    if (!mForward.matched && mReverse.matched && mReverse.score < DEFAULT_THRESHOLD) {
+      let reverseVotes = 1;
+      let forwardVotes = 0;
+      if (count > 2) {
+        const fEnd = get(count - 1);
+        const fPrevEnd = get(count - 2);
+        const mFwdEnd = estimateMatch(fPrevEnd, fEnd, opts);
+        const mRevEnd = estimateMatch(fEnd, fPrevEnd, opts);
+        if (mRevEnd.matched && !mFwdEnd.matched) reverseVotes++;
+        if (mFwdEnd.matched) forwardVotes++;
+      }
+      if (reverseVotes > forwardVotes) {
+        order = order.reverse();
+      }
+    }
+  }
+
+  const first = get(order[0]);
   const width = first.width;
   const placements: FramePlacement[] = [
-    { frameIndex: 0, docY: 0, srcY0: 0, srcY1: first.height },
+    { frameIndex: order[0], docY: 0, srcY0: 0, srcY1: first.height },
   ];
   const matches: FrameMatch[] = [];
   const warnings: StitchWarning[] = [];
 
   for (let i = 1; i < count; i++) {
-    const prevIndex = placements[placements.length - 1].frameIndex;
-    const prev = get(prevIndex);
-    const next = get(i);
+    const prevPlacement = placements[placements.length - 1];
+    const prev = get(prevPlacement.frameIndex);
+    const nextIdx = order[i];
+    const next = get(nextIdx);
     opts.onProgress?.(i, count - 1);
     const match = estimateMatch(prev, next, opts);
     matches.push(match);
 
     if (match.matched && match.offset < 4) {
       warnings.push({
-        frameIndex: i,
+        frameIndex: nextIdx,
         kind: 'duplicate',
-        message: `Frame ${i + 1} shows the same screen as frame ${prevIndex + 1} - skipped.`,
+        message: `Frame ${nextIdx + 1} shows the same screen as frame ${prevPlacement.frameIndex + 1} - skipped.`,
       });
       continue;
     }
 
     if (!match.matched) {
       warnings.push({
-        frameIndex: i,
+        frameIndex: nextIdx,
         kind: 'no-overlap',
-        message: `No overlap found between frame ${prevIndex + 1} and ${i + 1}; they were joined edge to edge. Some content may be missing.`,
+        message: `No overlap found between frame ${prevPlacement.frameIndex + 1} and ${nextIdx + 1}; they were joined edge to edge. Some content may be missing.`,
       });
     }
 
-    const prevPlacement = placements[placements.length - 1];
-    // The final frame keeps its bottom rows: nothing continues below it, so
-    // trimming a sticky-footer band there would only throw pixels away.
     const isLast = i === count - 1;
     placements.push({
-      frameIndex: i,
+      frameIndex: nextIdx,
       docY: prevPlacement.docY + Math.max(1, match.offset),
       srcY0: match.topFixed,
       srcY1: isLast ? next.height : Math.max(match.topFixed + 1, next.height - match.bottomFixed),
